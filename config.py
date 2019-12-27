@@ -13,7 +13,7 @@ img_width = 55
 img_height = 35
 img_channels = 1
 
-# synthetic image path
+# synthetic image path TODO- add the file pass from drive
 syn_path = 'dataset/SynthEyes_train_data'
 # real image path
 real_path = 'dataset/MPIIGaze_data'

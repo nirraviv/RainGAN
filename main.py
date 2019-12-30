@@ -7,7 +7,6 @@ from lib.image_history_buffer import ImageHistoryBuffer
 from lib.network import Discriminator, Refiner
 from lib.image_utils import generate_img_batch, calc_acc
 import config as cfg
-import os
 
 
 class Main(object):
@@ -66,7 +65,7 @@ class Main(object):
         print('=' * 50)
         if cfg.ref_pre_path:
             print(f'Loading R_pre from {cfg.ref_pre_path}')
-            self.R.load_state_dict(torch.load(cfg.ref_pre_path))
+            self.R.load_state_dict(torch.load(cfg.models_path / cfg.ref_pre_path))
             return
 
         # we first train the Rθ network with just self-regularization loss for 1,000 steps
@@ -101,7 +100,7 @@ class Main(object):
                 self.R.eval()
                 ref_image_batch = self.R(syn_image_batch)
 
-                figure_path = os.path.join(cfg.train_res_path, 'refined_image_batch_pre_train_%d.png' % index)
+                figure_path = cfg.train_res_path / f'refined_image_batch_pre_train_{index}.png'
                 generate_img_batch(syn_image_batch.data.cpu(), ref_image_batch.data.cpu(),
                                    real_image_batch.data, figure_path)
                 self.R.train()
@@ -113,7 +112,7 @@ class Main(object):
         print('=' * 50)
         if cfg.disc_pre_path:
             print(f'Loading D_pre from {cfg.disc_pre_path}')
-            self.D.load_state_dict(torch.load(cfg.disc_pre_path))
+            self.D.load_state_dict(torch.load(cfg.models_path / cfg.disc_pre_path))
             return
 
         # and Dφ for 200 steps (one mini-batch for refined images, another for real)
@@ -268,8 +267,8 @@ class Main(object):
 
             if step % cfg.save_per == 0:
                 print('Save two model dict.')
-                torch.save(self.D.state_dict(), cfg.D_path % step)
-                torch.save(self.R.state_dict(), cfg.R_path % step)
+                torch.save(self.D.state_dict(), cfg.models_path / cfg.D_path.format(step))
+                torch.save(self.R.state_dict(), cfg.models_path / cfg.R_path.format(step))
 
                 with torch.no_grad():
                     real_image_batch = self.real_loader.__iter__().next()
@@ -286,7 +285,7 @@ class Main(object):
         print('Generating a batch of training images...')
         self.R.eval()
 
-        pic_path = os.path.join(cfg.train_res_path, f'step_{step_index}.png')
+        pic_path = cfg.train_res_path / f'step_{step_index}.png'
         generate_img_batch(syn_image_batch.cpu().data, ref_image_batch.cpu().data, real_image_batch.cpu().data, pic_path)
         print('=' * 50)
 

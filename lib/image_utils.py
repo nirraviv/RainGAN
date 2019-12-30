@@ -20,10 +20,10 @@ def restore_img(img):
     return img
 
 
-def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):  # TODO: check this function
+def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):
     # syn_batch_type: Tensor, ref_batch_type: Tensor
     def tensor_to_numpy(img):
-        img = img.numpy()
+        img = img.cpu().numpy()
         img += max(-img.min(), 0)
         if img.max() != 0:
             img /= img.max()

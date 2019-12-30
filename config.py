@@ -19,7 +19,7 @@ syn_path = Path('dataset/gaze.npy')
 # real image path
 real_path = Path('dataset/real_gaze.npy')
 # training result path to save
-train_res_path = 'train_res'
+train_res_path = Path('train_res')
 # final_res_path = 'final_res'
 
 # result show in 4 sample per line
@@ -49,12 +49,16 @@ save_per = 10
 
 
 # pre-training dictionary path
-# ref_pre_path = 'models/R_pre.pkl'
+# ref_pre_path = 'R_pre.pkl'
 ref_pre_path = None
-# disc_pre_path = 'models/D_pre.pkl'
+# disc_pre_path = 'D_pre.pkl'
 disc_pre_path = None
 
 # dictionary saving path
-D_path = 'models/D_%d.pkl'
-R_path = 'models/R_%d.pkl'
+models_path = Path('models')
+D_path = 'D_{0}.pkl'
+R_path = 'R_{0}.pkl'
 
+# create dirs
+train_res_path.mkdir(parents=True, exist_ok=True)
+models_path.mkdir(parents=True, exist_ok=True)

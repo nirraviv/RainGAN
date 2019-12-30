@@ -1,8 +1,8 @@
 import torch
 import torch.utils.data as Data
-import torchvision
 from torch import nn
 from torchvision import transforms
+from utils.gaze_dataset import GazeDataset
 from lib.image_history_buffer import ImageHistoryBuffer
 from lib.network import Discriminator, Refiner
 from lib.image_utils import generate_img_batch, calc_acc
@@ -50,22 +50,17 @@ class Main(object):
         print('=' * 50)
         print('Loading data...')
         transform = transforms.Compose([
-            transforms.Grayscale(),
-            transforms.Resize((cfg.img_width, cfg.img_height)),
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,))])
 
-        syn_train_folder = torchvision.datasets.ImageFolder(root=cfg.syn_path, transform=transform)
-        # print(syn_train_folder)
-        self.syn_train_loader = Data.DataLoader(syn_train_folder, batch_size=cfg.batch_size, shuffle=True,
+        syn_gaze_dataset = GazeDataset(cfg.syn_path, transform=transform)
+        self.syn_train_loader = Data.DataLoader(syn_gaze_dataset, batch_size=cfg.batch_size, shuffle=True,
                                                 pin_memory=True)
-        print(f'syn_train_batch {len(self.syn_train_loader)}')
-
-        real_folder = torchvision.datasets.ImageFolder(root=cfg.real_path, transform=transform)
-        # real_folder.imgs = real_folder.imgs[:2000]
-        self.real_loader = Data.DataLoader(real_folder, batch_size=cfg.batch_size, shuffle=True,
+        print(f'# synthetic batches: {len(self.syn_train_loader)}')
+        real_gaze_dataset = GazeDataset(cfg.real_path, transform=transform)
+        self.real_loader = Data.DataLoader(real_gaze_dataset, batch_size=cfg.batch_size, shuffle=True,
                                            pin_memory=True)
-        print(f'real_batch {len(self.real_loader)}')
+        print(f'# real batches: {len(self.real_loader)}')
 
     def pre_train_refiner(self):
         print('=' * 50)
@@ -78,8 +73,8 @@ class Main(object):
         print(f'pre-training the refiner network {cfg.r_pretrain} times...')
 
         for index in range(cfg.r_pretrain):
-            syn_image_batch, _ = self.syn_train_loader.__iter__().next()
-            syn_image_batch = syn_image_batch.to(device=self.device)  # Variable(syn_image_batch).cuda(cfg.cuda_num)
+            syn_image_batch = self.syn_train_loader.__iter__().next()
+            syn_image_batch = syn_image_batch.to(device=self.device)
 
             self.R.train()
             ref_image_batch = self.R(syn_image_batch)
@@ -97,11 +92,11 @@ class Main(object):
                 # figure_name = 'refined_image_batch_pre_train_step_{}.png'.format(index)
                 print('[{0}/{1}] (R)reg_loss: {2:.4f}'.format(index, cfg.r_pretrain, r_loss.item()))
 
-                syn_image_batch, _ = self.syn_train_loader.__iter__().next()
-                syn_image_batch = syn_image_batch.to(device=self.device)  # Variable(syn_image_batch, volatile=True).cuda(cfg.cuda_num)
+                syn_image_batch = self.syn_train_loader.__iter__().next()
+                syn_image_batch = syn_image_batch.to(device=self.device)
 
-                real_image_batch, _ = self.real_loader.__iter__().next()
-                real_image_batch = real_image_batch.to(device=self.device)  # Variable(real_image_batch, volatile=True)
+                real_image_batch = self.real_loader.__iter__().next()
+                real_image_batch = real_image_batch.to(device=self.device)
 
                 self.R.eval()
                 ref_image_batch = self.R(syn_image_batch)
@@ -127,19 +122,19 @@ class Main(object):
         self.D.train()
         self.R.eval()
         for index in range(cfg.d_pretrain):
-            real_image_batch, _ = self.real_loader.__iter__().next()
-            real_image_batch = real_image_batch.to(device=self.device)  # Variable(real_image_batch).cuda(cfg.cuda_num)
+            real_image_batch = self.real_loader.__iter__().next()
+            real_image_batch = real_image_batch.to(device=self.device)
 
-            syn_image_batch, _ = self.syn_train_loader.__iter__().next()
-            syn_image_batch = syn_image_batch.to(device=self.device)  # Variable(syn_image_batch).cuda(cfg.cuda_num)
+            syn_image_batch = self.syn_train_loader.__iter__().next()
+            syn_image_batch = syn_image_batch.to(device=self.device)
 
             assert real_image_batch.size(0) == syn_image_batch.size(0)
 
             # ============ real image D ====================================================
             d_real_pred = self.D(real_image_batch).view(-1, 2)
 
-            d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)  # Variable(torch.zeros(d_real_pred.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
-            d_ref_y = torch.ones_like(d_real_y)  # Variable(torch.ones(d_real_pred.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
+            d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)
+            d_ref_y = torch.ones_like(d_real_y)
 
             acc_real = calc_acc(d_real_pred, 'real')
             d_loss_real = self.local_adversarial_loss(d_real_pred, d_real_y)
@@ -178,13 +173,13 @@ class Main(object):
         total_acc_adv = 0.0
 
         for index in range(cfg.k_r):
-            syn_image_batch, _ = self.syn_train_loader.__iter__().next()
-            syn_image_batch = syn_image_batch.to(device=self.device)  # Variable(syn_image_batch).cuda(cfg.cuda_num)
+            syn_image_batch = self.syn_train_loader.__iter__().next()
+            syn_image_batch = syn_image_batch.to(device=self.device)
 
             ref_image_batch = self.R(syn_image_batch)
             d_ref_pred = self.D(ref_image_batch).view(-1, 2)
 
-            d_real_y = d_ref_pred.new_zeros(d_ref_pred.size(0), dtype=torch.long)  # Variable(torch.zeros(d_ref_pred.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
+            d_real_y = d_ref_pred.new_zeros(d_ref_pred.size(0), dtype=torch.long)
 
             acc_adv = calc_acc(d_ref_pred, 'real')
 
@@ -220,12 +215,12 @@ class Main(object):
             p.requires_grad = True
 
         for index in range(cfg.k_d):
-            real_image_batch, _ = self.real_loader.__iter__().next()
-            syn_image_batch, _ = self.syn_train_loader.__iter__().next()
+            real_image_batch = self.real_loader.__iter__().next()
+            syn_image_batch = self.syn_train_loader.__iter__().next()
             assert real_image_batch.size(0) == syn_image_batch.size(0)
 
-            real_image_batch = real_image_batch.to(device=self.device)  # Variable(real_image_batch).cuda(cfg.cuda_num)
-            syn_image_batch = syn_image_batch.to(device=self.device)  # Variable(syn_image_batch).cuda(cfg.cuda_num)
+            real_image_batch = real_image_batch.to(device=self.device)
+            syn_image_batch = syn_image_batch.to(device=self.device)
 
             ref_image_batch = self.R(syn_image_batch)
 
@@ -235,18 +230,18 @@ class Main(object):
 
             if len(half_batch_from_image_history):
                 torch_type = torch.from_numpy(half_batch_from_image_history)
-                v_type = torch_type.to(device=self.device)  # Variable(torch_type).cuda(cfg.cuda_num)
+                v_type = torch_type.to(device=self.device)
                 ref_image_batch[:cfg.batch_size // 2] = v_type
 
             d_real_pred = self.D(real_image_batch).view(-1, 2)
 
-            d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)  # Variable(torch.zeros(d_real_pred.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
+            d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)
             d_loss_real = self.local_adversarial_loss(d_real_pred, d_real_y)
             # d_loss_real = torch.div(d_loss_real, cfg.batch_size)
             acc_real = calc_acc(d_real_pred, 'real')
 
             d_ref_pred = self.D(ref_image_batch).view(-1, 2)
-            d_ref_y = d_real_pred.new_ones(d_ref_pred.size(0), dtype=torch.long)  # Variable(torch.ones(d_ref_pred.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
+            d_ref_y = d_real_pred.new_ones(d_ref_pred.size(0), dtype=torch.long)
             d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
             # d_loss_ref = torch.div(d_loss_ref, cfg.batch_size)
             acc_ref = calc_acc(d_ref_pred, 'refine')
@@ -262,7 +257,7 @@ class Main(object):
     def train(self):
         print('=' * 50)
         print('Training...')
-        image_history_buffer = ImageHistoryBuffer((0, cfg.img_channels, cfg.img_width, cfg.img_height),
+        image_history_buffer = ImageHistoryBuffer((0, cfg.img_channels, cfg.img_height, cfg.img_width),
                                                   cfg.buffer_size * 10, cfg.batch_size)
         for step in range(cfg.train_steps):
             print('Step[%d/%d]' % (step, cfg.train_steps))
@@ -277,8 +272,8 @@ class Main(object):
                 torch.save(self.R.state_dict(), cfg.R_path % step)
 
                 with torch.no_grad():
-                    real_image_batch, _ = self.real_loader.__iter__().next()
-                    syn_image_batch, _ = self.syn_train_loader.__iter__().next()
+                    real_image_batch = self.real_loader.__iter__().next()
+                    syn_image_batch = self.syn_train_loader.__iter__().next()
                     real_image_batch = real_image_batch.to(device=self.device)
                     syn_image_batch = syn_image_batch.to(device=self.device)
 

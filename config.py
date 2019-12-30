@@ -1,4 +1,5 @@
 import torch
+from pathlib import Path
 
 # Is the PC has cuda
 cuda_use = torch.cuda.is_available()
@@ -14,9 +15,9 @@ img_height = 35
 img_channels = 1
 
 # synthetic image path TODO- add the file pass from drive
-syn_path = 'dataset/SynthEyes_train_data'
+syn_path = Path('dataset/gaze.npy')
 # real image path
-real_path = 'dataset/MPIIGaze_data'
+real_path = Path('dataset/real_gaze.npy')
 # training result path to save
 train_res_path = 'train_res'
 # final_res_path = 'final_res'

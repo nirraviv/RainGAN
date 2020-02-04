@@ -6,3 +6,4 @@ dataset*
 images/
 models/
 train_res/
+logs/

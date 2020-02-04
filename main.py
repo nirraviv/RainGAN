@@ -1,13 +1,14 @@
 import torch
 import torch.utils.data as Data
 from torch import nn
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from utils.gaze_dataset import GazeDataset
 from lib.image_history_buffer import ImageHistoryBuffer
 from lib.network import Discriminator, Refiner
 from lib.image_utils import generate_img_batch, calc_acc
 import config as cfg
-
+from pathlib import Path
 
 class Main(object):
     def __init__(self):
@@ -26,7 +27,7 @@ class Main(object):
 
         # parameters
         self.device = 'cuda' if cfg.cuda_use else 'cpu'
-
+        self.writer = SummaryWriter(Path('logs') / cfg.experiment_name)
         # initialization flow
         self.build_network()
         self.load_data()
@@ -39,7 +40,7 @@ class Main(object):
         self.R = Refiner(4, cfg.img_channels, nb_features=64).to(device=self.device)
         self.D = Discriminator(input_features=cfg.img_channels).to(device=self.device)
 
-        self.opt_R = torch.optim.Adam(self.R.parameters(), lr=cfg.r_lr)
+        self.opt_R = torch.optim.SGD(self.R.parameters(), lr=cfg.r_lr)
         self.opt_D = torch.optim.SGD(self.D.parameters(), lr=cfg.d_lr)
         self.self_regularization_loss = nn.L1Loss(reduction='sum')
         self.local_adversarial_loss = nn.CrossEntropyLoss(reduction='mean')
@@ -154,12 +155,12 @@ class Main(object):
             self.opt_D.step()
 
             if (index % cfg.d_pre_per == 0) or (index == cfg.d_pretrain - 1):
-                print('[{0}/{1}] (D)d_loss:{2}  acc_real:{3:.2f}% acc_ref:{4:.2f}%'.format(index, cfg.d_pretrain, d_loss.item(), acc_real, acc_ref))
+                print('[{0}/{1}] (D)d_loss:{2}  acc_real:{3:.2f}% acc_ref:{4:.2f}%'.format(index, cfg.d_pretrain, d_loss.item(), acc_real*100, acc_ref*100))
 
         print('Save D_pre to models/D_pre.pkl')
         torch.save(self.D.state_dict(), 'models/D_pre.pkl')
 
-    def train_refiner(self):
+    def train_refiner(self, step):
         self.D.eval()
         self.R.train()
 
@@ -205,9 +206,13 @@ class Main(object):
         mean_r_loss_adv = total_r_loss_adv / cfg.k_r
         mean_acc_adv = total_acc_adv / cfg.k_r
 
-        print('(R) loss:{0:.4f} loss_reg:{1:.4f}, loss_adv:{2:.4f}({3:.2f}%)'.format(mean_r_loss.item(), mean_r_loss_reg_scale.item(), mean_r_loss_adv.item(), mean_acc_adv))
+        self.writer.add_scalar(tag='refiner/scale_regulizer', scalar_value=mean_r_loss_reg_scale, global_step=step)
+        self.writer.add_scalar(tag='refiner/adversarial', scalar_value=mean_r_loss_adv, global_step=step)
+        self.writer.add_scalar(tag='acc/refiner', scalar_value=mean_acc_adv, global_step=step)
 
-    def train_discriminator(self, image_history_buffer):
+        print('(R) loss:{0:.4f} loss_reg:{1:.4f}, loss_adv:{2:.4f}({3:.2f}%)'.format(mean_r_loss.item(), mean_r_loss_reg_scale.item(), mean_r_loss_adv.item(), mean_acc_adv*100))
+
+    def train_discriminator(self, image_history_buffer, step):
         self.R.eval()
         self.D.train()
         for p in self.D.parameters():
@@ -251,7 +256,12 @@ class Main(object):
             d_loss.backward()
             self.opt_D.step()
 
-            print('(D) loss:{0:.4f} real_loss:{1:.4f}({2:.2f}%) refine_loss:{3:.4f}({4:.2f}%)'.format(d_loss.item() / 2, d_loss_real.item(), acc_real, d_loss_ref.item(), acc_ref))
+            self.writer.add_scalar(tag='discriminator/real', scalar_value=d_loss_real, global_step=step)
+            self.writer.add_scalar(tag='discriminator/adversarial', scalar_value=d_loss_ref, global_step=step)
+            self.writer.add_scalar(tag='acc/discriminator_real', scalar_value=acc_real, global_step=step)
+            self.writer.add_scalar(tag='acc/discriminator_refiner', scalar_value=acc_ref, global_step=step)
+
+            print('(D) loss:{0:.4f} real_loss:{1:.4f}({2:.2f}%) refine_loss:{3:.4f}({4:.2f}%)'.format(d_loss.item() / 2, d_loss_real.item(), acc_real*100, d_loss_ref.item(), acc_ref*100))
 
     def train(self):
         print('=' * 50)
@@ -261,9 +271,9 @@ class Main(object):
         for step in range(cfg.train_steps):
             print('Step[%d/%d]' % (step, cfg.train_steps))
 
-            self.train_refiner()
+            self.train_refiner(step=step)
 
-            self.train_discriminator(image_history_buffer)
+            self.train_discriminator(image_history_buffer, step=step)
 
             if step % cfg.save_per == 0:
                 print('Save two model dict.')
@@ -286,7 +296,8 @@ class Main(object):
         self.R.eval()
 
         pic_path = cfg.train_res_path / f'step_{step_index}.png'
-        generate_img_batch(syn_image_batch.cpu().data, ref_image_batch.cpu().data, real_image_batch.cpu().data, pic_path)
+        img = generate_img_batch(syn_image_batch.cpu().data, ref_image_batch.cpu().data, real_image_batch.cpu().data, pic_path)
+        self.writer.add_image('Images', img, global_step=step_index, dataformats='HWC')
         print('=' * 50)
 
 

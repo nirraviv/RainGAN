@@ -12,9 +12,11 @@ def normalize_img(img):
 
 def restore_img(img):
     # img_type: numpy
-    img += max(-img.min(), 0)
-    if img.max() != 0:
-        img /= img.max()
+    img += 1
+    img /= 2
+    # max += max(-img.min(), 0)
+    # if img.max() != 0:
+    #     img /= img.max()
     img *= 255
     img = img.astype(np.uint8)
     return img
@@ -89,7 +91,7 @@ def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):
     img = Image.fromarray(imgs)
 
     img.save(png_path, 'png')
-
+    return imgs
 
 def calc_acc(output, type='real'):
     assert type in ['real', 'refine']
@@ -99,6 +101,6 @@ def calc_acc(output, type='real'):
     else:
         label = output.new_ones(output.size(0), dtype=torch.long)  # Variable(torch.ones(output.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
 
-    softmax_output = torch.nn.functional.softmax(output, dim=1)
+    softmax_output = torch.softmax(output, dim=1)
     acc = softmax_output.data.max(1)[1].cpu().numpy() == label.data.cpu().numpy()
     return acc.mean()

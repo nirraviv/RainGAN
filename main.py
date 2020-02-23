@@ -4,14 +4,15 @@ from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from utils.gaze_dataset import GazeDataset
-from lib.image_history_buffer import ImageHistoryBuffer
-from lib.network import Discriminator, Refiner
-from lib.image_utils import generate_img_batch, calc_acc
+from raingan.image_history_buffer import ImageHistoryBuffer
+from raingan.network import Discriminator, Refiner
+from raingan.image_utils import generate_img_batch, calc_acc
 import config as cfg
 from pathlib import Path
+from shutil import copy
 
 
-class Main(object):
+class Trainer(object):
     def __init__(self):
         # network
         self.R = None
@@ -21,63 +22,62 @@ class Main(object):
         self.self_regularization_loss = None
         self.local_adversarial_loss = None
         self.reg_delta = None
-        self.gp_delta = 10
-        self.mode = cfg.mode
+        self.output_features = 2
 
         # data
         self.syn_train_loader = None
         self.real_loader = None
 
         # parameters
+        self.start_step = 0
         self.device = 'cuda' if cfg.cuda_use else 'cpu'
         self.writer = SummaryWriter(Path('logs') / cfg.experiment_name)
+        copy("config.py", Path('logs') / cfg.experiment_name)
+
         # initialization flow
-        self.build_network()
         self.load_data()
-        self.pre_train_refiner()
-        self.pre_train_discriminator()
+        self.build_network()
 
     def build_network(self):
         print('=' * 50)
         print('Building network...')
         self.R = Refiner(4, cfg.img_channels, nb_features=64).to(device=self.device)
-        self.D = Discriminator(input_features=cfg.img_channels).to(device=self.device)
+        self.D = Discriminator(input_features=cfg.img_channels, out_features=self.output_features).to(device=self.device)
 
         self.opt_R = torch.optim.SGD(self.R.parameters(), lr=cfg.r_lr)
         self.opt_D = torch.optim.SGD(self.D.parameters(), lr=cfg.d_lr)
         self.self_regularization_loss = nn.L1Loss(reduction='sum')
-        self.local_adversarial_loss = nn.CrossEntropyLoss(reduction='mean')
+        self.local_adversarial_loss = nn.CrossEntropyLoss(reduction='sum')
         self.reg_delta = cfg.delta
+
+        if cfg.load_from_iter is not None and (cfg.models_path / cfg.R_path.format(cfg.load_from_iter)).is_file():
+            disc_checkpoint = torch.load(cfg.models_path / cfg.D_path.format(cfg.load_from_iter))
+            ref_checkpoint = torch.load(cfg.models_path / cfg.R_path.format(cfg.load_from_iter))
+            self.D.load_state_dict(disc_checkpoint)
+            self.R.load_state_dict(ref_checkpoint)
+            self.start_step = cfg.load_from_iter
+
+        else:
+            self.pre_train_refiner()
+            self.pre_train_discriminator()
 
     def load_data(self):
         print('=' * 50)
         print('Loading data...')
+
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,))])
 
-        syn_gaze_dataset = GazeDataset(cfg.syn_path, transform=transform)
-        self.syn_train_loader = Data.DataLoader(syn_gaze_dataset, batch_size=cfg.batch_size, shuffle=True,
+        syn_dataset = GazeDataset(cfg.syn_path, transform=transform)
+        self.syn_train_loader = Data.DataLoader(syn_dataset, batch_size=cfg.batch_size, shuffle=True,
                                                 pin_memory=True)
         print(f'# synthetic batches: {len(self.syn_train_loader)}')
-        real_gaze_dataset = GazeDataset(cfg.real_path, transform=transform)
-        self.real_loader = Data.DataLoader(real_gaze_dataset, batch_size=cfg.batch_size, shuffle=True,
+
+        real_dataset = GazeDataset(cfg.real_path, transform=transform)
+        self.real_loader = Data.DataLoader(real_dataset, batch_size=cfg.batch_size, shuffle=True,
                                            pin_memory=True)
         print(f'# real batches: {len(self.real_loader)}')
-
-    def calc_gradient_penalty(self, real_data, fake_data):
-        eps = torch.rand(real_data.size(0), 1, 1, 1).to(device=self.device)
-        eps = eps.expand(real_data.size())
-
-        interpolates = (eps * real_data + (1 - eps) * fake_data).requires_grad_()
-
-        disc_interpolates = self.D(interpolates)
-
-        gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolates,
-                                        grad_outputs=torch.ones_like(disc_interpolates),
-                                        create_graph=True, retain_graph=True, only_inputs=True)[0]
-        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * self.gp_delta
-        return gradient_penalty
 
     def pre_train_refiner(self):
         self.R.train()
@@ -99,7 +99,6 @@ class Main(object):
             ref_image_batch = self.R(syn_image_batch)
 
             r_loss = self.self_regularization_loss(ref_image_batch, syn_image_batch)
-            # r_loss = torch.div(r_loss, cfg.batch_size)
             r_loss = torch.mul(r_loss, self.reg_delta)
 
             self.opt_R.zero_grad()
@@ -107,26 +106,27 @@ class Main(object):
             self.opt_R.step()
 
             # log every `log_interval` steps
-            if (index % cfg.r_pre_per == 0) or (index == cfg.r_pretrain - 1):
-                # figure_name = 'refined_image_batch_pre_train_step_{}.png'.format(index)
-                print('[{0}/{1}] (R)reg_loss: {2:.4f}'.format(index, cfg.r_pretrain, r_loss.item()))
+            with torch.no_grad():
+                if (index % cfg.r_pre_per == 0) or (index == cfg.r_pretrain - 1):
+                    # figure_name = 'refined_image_batch_pre_train_step_{}.png'.format(index)
+                    print('[{0}/{1}] (R)reg_loss: {2:.4f}'.format(index, cfg.r_pretrain, r_loss.item()))
 
-                syn_image_batch = self.syn_train_loader.__iter__().next()
-                syn_image_batch = syn_image_batch.to(device=self.device)
+                    syn_image_batch = self.syn_train_loader.__iter__().next()
+                    syn_image_batch = syn_image_batch.to(device=self.device)
 
-                real_image_batch = self.real_loader.__iter__().next()
-                real_image_batch = real_image_batch.to(device=self.device)
+                    real_image_batch = self.real_loader.__iter__().next()
+                    real_image_batch = real_image_batch.to(device=self.device)
 
-                self.R.eval()
-                ref_image_batch = self.R(syn_image_batch)
+                    self.R.eval()
+                    ref_image_batch = self.R(syn_image_batch)
 
-                figure_path = cfg.train_res_path / f'refined_image_batch_pre_train_{index}.png'
-                generate_img_batch(syn_image_batch.data.cpu(), ref_image_batch.data.cpu(),
-                                   real_image_batch.data, figure_path)
-                self.R.train()
+                    figure_path = cfg.train_res_path / f'refined_image_batch_pre_train_{index}.png'
+                    generate_img_batch(syn_image_batch.data.cpu(), ref_image_batch.data.cpu(),
+                                       real_image_batch.data, figure_path)
+                    self.R.train()
 
-                print('Save R_pre to models/R_pre.pkl')
-                torch.save(self.R.state_dict(), 'models/R_pre.pkl')
+                    print('Save R_pre to models/R_pre.pkl')
+                    torch.save(self.R.state_dict(), cfg.models_path / 'R_pre.pkl')
 
     def pre_train_discriminator(self):
         self.D.train()
@@ -150,30 +150,19 @@ class Main(object):
 
             assert real_image_batch.size(0) == syn_image_batch.size(0)
 
-            d_real_pred = self.D(real_image_batch).view(-1, 2)
+            d_real_pred = self.D(real_image_batch).reshape(-1, self.output_features).squeeze()
             ref_image_batch = self.R(syn_image_batch)
-            d_ref_pred = self.D(ref_image_batch).view(-1, 2)
+            d_ref_pred = self.D(ref_image_batch).reshape(-1, self.output_features).squeeze()
 
-            if self.mode == 'gan':
-                d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)
-                d_ref_y = torch.ones_like(d_real_y)
+            d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)
+            d_ref_y = torch.ones_like(d_real_y)
 
-                d_loss_real = self.local_adversarial_loss(d_real_pred, d_real_y)
-                # d_loss_real = torch.div(d_loss_real, cfg.batch_size)
+            d_loss_real = self.local_adversarial_loss(d_real_pred, d_real_y)
 
-                d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
-                # d_loss_ref = torch.div(d_loss_ref, cfg.batch_size)
+            d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
 
-                d_loss = d_loss_real + d_loss_ref
-            else:
-                d_loss_real = -1 * d_real_pred.mean().view(1)
-                d_loss_ref = +1 * d_ref_pred.mean().view(1)
-
-                gradient_penalty = self.calc_gradient_penalty(real_image_batch, ref_image_batch)
-
-                d_loss = d_loss_real + d_loss_ref + gradient_penalty
-                w_dist = -(d_loss_real + d_loss_ref).item()
-
+            d_loss = d_loss_real + d_loss_ref
+            w_dist = 0
             acc_real = calc_acc(d_real_pred, 'real')
             acc_ref = calc_acc(d_ref_pred, 'refine')
 
@@ -182,11 +171,11 @@ class Main(object):
             self.opt_D.step()
 
             if (index % cfg.d_pre_per == 0) or (index == cfg.d_pretrain - 1):
-                print_format ='[{0}/{1}] (D)d_loss:{2}  acc_real:{3:.2f}% acc_ref:{4:.2f}% w_dist:{4:.4f}'
+                print_format = '[{0}/{1}] (D)d_loss:{2}  acc_real:{3:.2f}% acc_ref:{4:.2f}% w_dist:{5:.4f}'
                 print(print_format.format(index, cfg.d_pretrain, d_loss.item(), acc_real*100, acc_ref*100, w_dist))
 
         print('Save D_pre to models/D_pre.pkl')
-        torch.save(self.D.state_dict(), 'models/D_pre.pkl')
+        torch.save(self.D.state_dict(), cfg.models_path / 'D_pre.pkl')
 
     def train_refiner(self, step):
         self.D.eval()
@@ -202,31 +191,27 @@ class Main(object):
             syn_image_batch = syn_image_batch.to(device=self.device)
 
             ref_image_batch = self.R(syn_image_batch)
-            d_ref_pred = self.D(ref_image_batch).view(-1, 2)
+            d_ref_pred = self.D(ref_image_batch)
+            d_ref_pred = d_ref_pred.reshape(-1, self.output_features).squeeze()
 
-            if self.mode == 'gan':
-                d_real_y = d_ref_pred.new_zeros(d_ref_pred.size(0), dtype=torch.long)
-                r_loss_adv = self.local_adversarial_loss(d_ref_pred, d_real_y)
-                # r_loss_adv = torch.div(r_loss_adv, cfg.batch_size)
-
-            else:
-                r_loss_adv = -1 * d_ref_pred.mean().view(1)
+            d_real_y = d_ref_pred.new_zeros(d_ref_pred.size(0), dtype=torch.long)
+            r_loss_adv = self.local_adversarial_loss(d_ref_pred, d_real_y)
+            acc_adv = calc_acc(d_ref_pred, 'real')
 
             r_loss_reg = self.self_regularization_loss(ref_image_batch, syn_image_batch)
             r_loss_reg_scale = torch.mul(r_loss_reg, self.reg_delta)
-            # r_loss_reg_scale = torch.div(r_loss_reg_scale, cfg.batch_size)
 
             r_loss = r_loss_reg_scale + r_loss_adv
-            acc_adv = calc_acc(d_ref_pred, 'real')
 
             self.opt_R.zero_grad()
             r_loss.backward()
             self.opt_R.step()
 
-            total_r_loss += r_loss
-            total_r_loss_reg_scale += r_loss_reg_scale
-            total_r_loss_adv += r_loss_adv
+            total_r_loss += r_loss.item()
+            total_r_loss_reg_scale += r_loss_reg_scale.item()
+            total_r_loss_adv += r_loss_adv.item()
             total_acc_adv += acc_adv
+
         mean_r_loss = total_r_loss / cfg.k_r
         mean_r_loss_reg_scale = total_r_loss_reg_scale / cfg.k_r
         mean_r_loss_adv = total_r_loss_adv / cfg.k_r
@@ -236,11 +221,13 @@ class Main(object):
         self.writer.add_scalar(tag='refiner/adversarial', scalar_value=mean_r_loss_adv, global_step=step)
         self.writer.add_scalar(tag='acc/refiner', scalar_value=mean_acc_adv, global_step=step)
 
-        print('(R) loss:{0:.4f} loss_reg:{1:.4f}, loss_adv:{2:.4f}({3:.2f}%)'.format(mean_r_loss.item(), mean_r_loss_reg_scale.item(), mean_r_loss_adv.item(), mean_acc_adv*100))
+        print('(R) loss:{0:.4f} loss_reg:{1:.4f}, loss_adv:{2:.4f}({3:.2f}%)'.format(mean_r_loss, mean_r_loss_reg_scale,
+                                                                                     mean_r_loss_adv, mean_acc_adv*100))
 
     def train_discriminator(self, image_history_buffer, step):
         self.R.eval()
         self.D.train()
+        total_d_loss_real, total_d_loss_ref, total_acc_real, total_acc_ref, total_w_dist = 0, 0, 0, 0, 0
 
         for index in range(cfg.k_d):
             real_image_batch = self.real_loader.__iter__().next()
@@ -261,51 +248,52 @@ class Main(object):
                 v_type = torch_type.to(device=self.device)
                 ref_image_batch[:cfg.batch_size // 2] = v_type
 
-            d_real_pred = self.D(real_image_batch).view(-1, 2)
-            d_ref_pred = self.D(ref_image_batch).view(-1, 2)
+            d_real_pred = self.D(real_image_batch).reshape(-1, self.output_features).squeeze()
+            d_ref_pred = self.D(ref_image_batch).reshape(-1, self.output_features).squeeze()
 
-            if self.mode == 'gan':
-                d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)
-                d_loss_real = self.local_adversarial_loss(d_real_pred, d_real_y)
-                # d_loss_real = torch.div(d_loss_real, cfg.batch_size)
+            d_real_y = d_real_pred.new_zeros(d_real_pred.size(0), dtype=torch.long)
+            d_loss_real = self.local_adversarial_loss(d_real_pred, d_real_y)
 
-                d_ref_y = d_real_pred.new_ones(d_ref_pred.size(0), dtype=torch.long)
-                d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
-                # d_loss_ref = torch.div(d_loss_ref, cfg.batch_size)
-                d_loss = d_loss_real + d_loss_ref
-                w_dist = 0
+            d_ref_y = d_real_pred.new_ones(d_ref_pred.size(0), dtype=torch.long)
+            d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
 
-            else:
-                d_loss_real = -1 * d_real_pred.mean().view(1)
-                d_loss_ref = +1 * d_ref_pred.mean().view(1)
-
-                gradient_penalty = self.calc_gradient_penalty(real_image_batch, ref_image_batch)
-
-                d_loss = d_loss_real + d_loss_ref + gradient_penalty
-                w_dist = -(d_loss_real + d_loss_ref).item()
+            d_loss = d_loss_real + d_loss_ref
+            w_dist = 0
 
             acc_real = calc_acc(d_real_pred, 'real')
             acc_ref = calc_acc(d_ref_pred, 'refine')
 
-            self.D.zero_grad()
+            self.opt_D.zero_grad()
             d_loss.backward()
             self.opt_D.step()
 
-            self.writer.add_scalar(tag='discriminator/real', scalar_value=d_loss_real, global_step=step)
-            self.writer.add_scalar(tag='discriminator/adversarial', scalar_value=d_loss_ref, global_step=step)
-            self.writer.add_scalar(tag='acc/discriminator_real', scalar_value=acc_real, global_step=step)
-            self.writer.add_scalar(tag='acc/discriminator_refiner', scalar_value=acc_ref, global_step=step)
+            total_d_loss_real += d_loss_real.item()
+            total_d_loss_ref += d_loss_ref.item()
+            total_acc_real += acc_real.item()
+            total_acc_ref += acc_ref.item()
+            total_w_dist += w_dist
 
-            print_foramt = '(D) loss:{0:.4f} real_loss:{1:.4f}({2:.2f}%) refine_loss:{3:.4f}({4:.2f}% w_dist:{5:.4f})'
-            print(print_foramt.format(d_loss.item() / 2, d_loss_real.item(), acc_real*100, d_loss_ref.item(),
-                                      acc_ref*100, w_dist))
+        mean_w_dist = total_w_dist / cfg.k_d
+        mean_d_loss_real = total_d_loss_real / cfg.k_d
+        mean_d_loss_ref = total_d_loss_ref / cfg.k_d
+        mean_acc_real = total_acc_real / cfg.k_d
+        mean_acc_ref = total_acc_ref / cfg.k_d
+
+        self.writer.add_scalar(tag='discriminator/real', scalar_value=mean_d_loss_real, global_step=step)
+        self.writer.add_scalar(tag='discriminator/adversarial', scalar_value=mean_d_loss_ref, global_step=step)
+        self.writer.add_scalar(tag='acc/discriminator_real', scalar_value=mean_acc_real, global_step=step)
+        self.writer.add_scalar(tag='acc/discriminator_refiner', scalar_value=mean_acc_ref, global_step=step)
+
+        print_foramt = '(D) loss:{0:.4f} real_loss:{1:.4f}({2:.2f}%) refine_loss:{3:.4f}({4:.2f}%) w_dist:{5:.4f}'
+        print(print_foramt.format(mean_d_loss_real+mean_d_loss_ref, mean_d_loss_real, mean_acc_real*100, mean_d_loss_ref,
+                                  mean_acc_ref*100, mean_w_dist))
 
     def train(self):
         print('=' * 50)
         print('Training...')
         image_history_buffer = ImageHistoryBuffer((0, cfg.img_channels, cfg.img_height, cfg.img_width),
                                                   cfg.buffer_size * 10, cfg.batch_size)
-        for step in range(cfg.train_steps):
+        for step in range(self.start_step, cfg.train_steps):
             print('Step[%d/%d]' % (step, cfg.train_steps))
 
             self.train_refiner(step=step)
@@ -317,29 +305,33 @@ class Main(object):
                 torch.save(self.D.state_dict(), cfg.models_path / cfg.D_path.format(step))
                 torch.save(self.R.state_dict(), cfg.models_path / cfg.R_path.format(step))
 
-                with torch.no_grad():
-                    real_image_batch = self.real_loader.__iter__().next()
-                    syn_image_batch = self.syn_train_loader.__iter__().next()
-                    real_image_batch = real_image_batch.to(device=self.device)
-                    syn_image_batch = syn_image_batch.to(device=self.device)
+                self.generate_batch_train_image(step_index=step)
 
-                    self.R.eval()
-                    ref_image_batch = self.R(syn_image_batch)
-                    self.generate_batch_train_image(syn_image_batch, ref_image_batch, real_image_batch, step_index=step)
-
-    def generate_batch_train_image(self, syn_image_batch, ref_image_batch, real_image_batch, step_index=-1):
-        print('=' * 50)
-        print('Generating a batch of training images...')
+    def generate_batch_train_image(self, step_index=-1, save=False):
         self.R.eval()
+        with torch.no_grad():
+            real_image_batch = self.real_loader.__iter__().next()
+            syn_image_batch = self.syn_train_loader.__iter__().next()
+            real_image_batch = real_image_batch.to(device=self.device)
+            syn_image_batch = syn_image_batch.to(device=self.device)
 
-        pic_path = cfg.train_res_path / f'step_{step_index}.png'
-        img = generate_img_batch(syn_image_batch.cpu().data, ref_image_batch.cpu().data, real_image_batch.cpu().data, pic_path)
-        self.writer.add_image('Images', img, global_step=step_index, dataformats='HWC')
-        print('=' * 50)
+            ref_image_batch = self.R(syn_image_batch)
+
+            print('=' * 50)
+            print('Generating a batch of training images...')
+
+            pic_path = cfg.train_res_path / f'step_{step_index}.png' if save else None
+            img = generate_img_batch(syn_image_batch.cpu().data, ref_image_batch.cpu().data, real_image_batch.cpu().data, pic_path)
+            tb_head = 'Final' if save else 'Images'
+            self.writer.add_image(tb_head, img, global_step=step_index, dataformats='HWC')
+            print('=' * 50)
 
 
 if __name__ == '__main__':
-    obj = Main()
-    obj.train()
+    trainer = Trainer()
+    if cfg.is_train:
+        trainer.train()
+    for i in range(10):
+        trainer.generate_batch_train_image(step_index=i, save=True)
 
 

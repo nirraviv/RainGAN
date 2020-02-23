@@ -1,4 +1,5 @@
 from torch import nn
+from torchvision.models import vgg16
 
 
 class ResnetBlock(nn.Module):
@@ -6,10 +7,10 @@ class ResnetBlock(nn.Module):
         super(ResnetBlock, self).__init__()
         self.convs = nn.Sequential(
             nn.Conv2d(input_features, nb_features, 3, 1, 1),
-            nn.BatchNorm2d(nb_features),
+            # nn.BatchNorm2d(nb_features),
             nn.LeakyReLU(),
             nn.Conv2d(nb_features, nb_features, 3, 1, 1),
-            nn.BatchNorm2d(nb_features)
+            # nn.BatchNorm2d(nb_features)
         )
         self.relu = nn.LeakyReLU()
 
@@ -26,7 +27,8 @@ class Refiner(nn.Module):
 
         self.conv_1 = nn.Sequential(
             nn.Conv2d(in_features, nb_features, 3, stride=1, padding=1),
-            nn.BatchNorm2d(nb_features)
+            # nn.BatchNorm2d(nb_features),
+            nn.LeakyReLU()
         )
 
         blocks = []
@@ -49,55 +51,43 @@ class Refiner(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, input_features):
+    def __init__(self, input_features, out_features=2):
         super(Discriminator, self).__init__()
+        self.out_features = out_features
 
-        def conv_(input_dim, output_dim, kernel, stride, padding):
-            return nn.Sequential(
-                nn.Conv2d(input_dim, output_dim, kernel, stride, padding),
-                nn.BatchNorm2d(output_dim),
-                nn.LeakyReLU()
-            )
-        self.conv1 = conv_(input_features, 96, 3, 2, 1)
-        self.conv2 = conv_(96, 64, 3, 2, 1)
-        self.pool = nn.MaxPool2d(3, 1, 1)
-        self.conv3 = conv_(64, 32, 3, 1, 1)
-        self.conv4 = conv_(32, 32, 1, 1, 0)
-        self.conv5 = conv_(32, 2, 1, 1, 0)
+        vgg = vgg16(pretrained=True)
+        vgg = list(vgg.children())[0]  # take only cnn
+        vgg = nn.Sequential(*list(vgg.children())[:16]) # take 3 blocks
+        self.convs = nn.Sequential(nn.Conv2d(input_features, 3, 3, 2, 1),
+                                   nn.ReLU(),
+                                   vgg,
+                                   nn.Conv2d(256, out_features, 1, 1, 0))
 
         # self.convs = nn.Sequential(
         #     nn.Conv2d(input_features, 96, 3, 2, 1),
-        #     nn.BatchNorm2d(96),
+        #     # nn.BatchNorm2d(96),
         #     nn.LeakyReLU(),
         #     nn.Conv2d(96, 64, 3, 2, 1),
-        #     nn.BatchNorm2d(64),
+        #     # nn.BatchNorm2d(64),
         #     nn.LeakyReLU(),
         #
-        #     nn.MaxPool2d(3,1,1), # nn.AvgPool2d(3, 2, 1),
+        #     nn.MaxPool2d(3, 1, 1), # nn.AvgPool2d(3, 2, 1), #
         #
         #     nn.Conv2d(64, 32, 3, 1, 1),
-        #     nn.BatchNorm2d(32),
+        #     # nn.BatchNorm2d(32),
         #     nn.LeakyReLU(),
         #     nn.Conv2d(32, 32, 1, 1, 0),
-        #     nn.BatchNorm2d(32),
+        #     # nn.BatchNorm2d(32),
         #     nn.LeakyReLU(),
         #
-        #     nn.MaxPool2d(3,1,1), # nn.AvgPool2d(3, 2, 1)
+        #     # nn.MaxPool2d(3, 1, 1), # nn.AvgPool2d(3, 2, 1)
         #
-        #     nn.Conv2d(32, 2, 1, 1, 0),
+        #     nn.Conv2d(32, out_features, 1, 1, 0),
         #     # nn.BatchNorm2d(2),
         #     # nn.LeakyReLU(),
         # )
 
     def forward(self, x):
-        # convs = self.convs(x)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.pool(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        convs = self.conv5(x)
-        output = convs.view(convs.size(0), -1, 2)
+        convs = self.convs(x)
+        output = convs.view(convs.size(0), self.out_features, -1).transpose(-1, -2)
         return output
-
-

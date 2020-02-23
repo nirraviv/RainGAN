@@ -4,33 +4,19 @@ import torch
 import config as cfg
 
 
-def normalize_img(img):
-    # img_type: numpy
-    img = img * 1.0 / 255
-    return (img - 0.5) / 0.5
-
-
 def restore_img(img):
     # img_type: numpy
     img += 1
     img /= 2
-    # max += max(-img.min(), 0)
-    # if img.max() != 0:
-    #     img /= img.max()
     img *= 255
     img = img.astype(np.uint8)
     return img
 
 
-def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):
+def generate_img_batch(syn_batch, ref_batch, real_batch, png_path=None):
     # syn_batch_type: Tensor, ref_batch_type: Tensor
     def tensor_to_numpy(img):
-        img = img.cpu().numpy()
-        img += max(-img.min(), 0)
-        if img.max() != 0:
-            img /= img.max()
-        img *= 255
-        img = img.astype(np.uint8)
+        img = restore_img(img.cpu().numpy())
         img = np.transpose(img, [1, 2, 0])
         return img
 
@@ -41,8 +27,6 @@ def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):
     a_blank = torch.zeros(cfg.img_height, cfg.img_width*2, 1).numpy().astype(np.uint8)
 
     nb = syn_batch.size(0)
-    # print(syn_batch.size())
-    # print(ref_batch.size())
     vertical_list = []
 
     for index in range(0, nb, cfg.pics_line):
@@ -55,15 +39,11 @@ def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):
         syn_line = syn_batch[st:end]
         ref_line = ref_batch[st:end]
         real_line = real_batch[st:end]
-        # print('====>', nb)
-        # print(syn_line.size())
-        # print(ref_line.size())
         nb_per_line = syn_line.size(0)
 
         line_list = []
 
         for i in range(nb_per_line):
-            #print(i, len(syn_line))
             syn_np = tensor_to_numpy(syn_line[i])
             ref_np = tensor_to_numpy(ref_line[i])
             real_np = tensor_to_numpy(real_line[i])
@@ -74,33 +54,34 @@ def generate_img_batch(syn_batch, ref_batch, real_batch, png_path):
         while fill_nb:
             line_list.append(a_blank)
             fill_nb -= 1
-        # print(len(line_list))
-        # print(line_list[0].shape)
-        # print(line_list[1].shape)
-        # print(line_list[2].shape)
-        # print(line_list[3].shape)
-        # print(line_list[4].shape)
         line = np.concatenate(line_list, axis=1)
-        # print(line.dtype)
         vertical_list.append(line)
 
     imgs = np.concatenate(vertical_list, axis=0)
     if imgs.shape[-1] == 1:
         imgs = np.tile(imgs, [1, 1, 3])
-    # print(imgs.shape, imgs.dtype)
-    img = Image.fromarray(imgs)
 
-    img.save(png_path, 'png')
+    if png_path is not None:
+        img = Image.fromarray(imgs)
+        img.save(png_path, 'png')
+
     return imgs
+
 
 def calc_acc(output, type='real'):
     assert type in ['real', 'refine']
 
     if type == 'real':
-        label = output.new_zeros(output.size(0), dtype=torch.long)  # Variable(torch.zeros(output.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
+        label = output.new_zeros(output.size(0), dtype=torch.long)
     else:
-        label = output.new_ones(output.size(0), dtype=torch.long)  # Variable(torch.ones(output.size(0)).type(torch.LongTensor)).cuda(cfg.cuda_num)
+        label = output.new_ones(output.size(0), dtype=torch.long)
 
-    softmax_output = torch.softmax(output, dim=1)
-    acc = softmax_output.data.max(1)[1].cpu().numpy() == label.data.cpu().numpy()
+    if output.ndim > 1:
+        softmax_output = torch.softmax(output, dim=1)
+        acc = (softmax_output.max(1)[1] == label).cpu().numpy()
+
+    else:
+        softmax_output = torch.sigmoid(output)
+        acc = (torch.round(softmax_output) == label).cpu().numpy()
+
     return acc.mean()

@@ -23,6 +23,6 @@ All configuration parameters to train and evaluate RainGAN are in config.py
 - Run: python main.py
 
 ### Evaluate
-- In configuration file set __is_train=False__ and __is_eyes=False__
+- In configuration file set __load_from_iter__, __is_train=False__ and __is_eyes=False__
 - Run: python main.py
 

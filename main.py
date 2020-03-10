@@ -162,7 +162,6 @@ class Trainer(object):
             d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
 
             d_loss = d_loss_real + d_loss_ref
-            w_dist = 0
             acc_real = calc_acc(d_real_pred, 'real')
             acc_ref = calc_acc(d_ref_pred, 'refine')
 
@@ -171,8 +170,8 @@ class Trainer(object):
             self.opt_D.step()
 
             if (index % cfg.d_pre_per == 0) or (index == cfg.d_pretrain - 1):
-                print_format = '[{0}/{1}] (D)d_loss:{2}  acc_real:{3:.2f}% acc_ref:{4:.2f}% w_dist:{5:.4f}'
-                print(print_format.format(index, cfg.d_pretrain, d_loss.item(), acc_real*100, acc_ref*100, w_dist))
+                print_format = '[{0}/{1}] (D)d_loss:{2}  acc_real:{3:.2f}% acc_ref:{4:.2f}%'
+                print(print_format.format(index, cfg.d_pretrain, d_loss.item(), acc_real*100, acc_ref*100))
 
         print('Save D_pre to models/D_pre.pkl')
         torch.save(self.D.state_dict(), cfg.models_path / 'D_pre.pkl')
@@ -227,7 +226,7 @@ class Trainer(object):
     def train_discriminator(self, image_history_buffer, step):
         self.R.eval()
         self.D.train()
-        total_d_loss_real, total_d_loss_ref, total_acc_real, total_acc_ref, total_w_dist = 0, 0, 0, 0, 0
+        total_d_loss_real, total_d_loss_ref, total_acc_real, total_acc_ref = 0, 0, 0, 0
 
         for index in range(cfg.k_d):
             real_image_batch = self.real_loader.__iter__().next()
@@ -258,7 +257,6 @@ class Trainer(object):
             d_loss_ref = self.local_adversarial_loss(d_ref_pred, d_ref_y)
 
             d_loss = d_loss_real + d_loss_ref
-            w_dist = 0
 
             acc_real = calc_acc(d_real_pred, 'real')
             acc_ref = calc_acc(d_ref_pred, 'refine')
@@ -271,9 +269,7 @@ class Trainer(object):
             total_d_loss_ref += d_loss_ref.item()
             total_acc_real += acc_real.item()
             total_acc_ref += acc_ref.item()
-            total_w_dist += w_dist
 
-        mean_w_dist = total_w_dist / cfg.k_d
         mean_d_loss_real = total_d_loss_real / cfg.k_d
         mean_d_loss_ref = total_d_loss_ref / cfg.k_d
         mean_acc_real = total_acc_real / cfg.k_d
@@ -284,9 +280,9 @@ class Trainer(object):
         self.writer.add_scalar(tag='acc/discriminator_real', scalar_value=mean_acc_real, global_step=step)
         self.writer.add_scalar(tag='acc/discriminator_refiner', scalar_value=mean_acc_ref, global_step=step)
 
-        print_foramt = '(D) loss:{0:.4f} real_loss:{1:.4f}({2:.2f}%) refine_loss:{3:.4f}({4:.2f}%) w_dist:{5:.4f}'
+        print_foramt = '(D) loss:{0:.4f} real_loss:{1:.4f}({2:.2f}%) refine_loss:{3:.4f}({4:.2f}%)'
         print(print_foramt.format(mean_d_loss_real+mean_d_loss_ref, mean_d_loss_real, mean_acc_real*100, mean_d_loss_ref,
-                                  mean_acc_ref*100, mean_w_dist))
+                                  mean_acc_ref*100))
 
     def train(self):
         print('=' * 50)
